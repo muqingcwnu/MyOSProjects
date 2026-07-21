@@ -1,13 +1,4 @@
-"""
-Experimental Evaluation Module
-
-This module implements the experimental evaluation framework:
-- Experimental setup
-- Performance results
-- Ablation studies
-- Scalability and overhead
-- Security analysis
-"""
+"""Performance, ablation, scalability, and security evaluation runners."""
 
 import sys
 from pathlib import Path
@@ -31,11 +22,14 @@ from evaluation.simulation_framework import (
 from dandelion_learn.dandelion_learn_sim import ClusterSimulator
 from dandelion_learn.dandelion_learn_sim import (
     HardwareUnit,
-    build_default_cluster,
+    build_cluster_from_config,
     RLScheduler,
     MultiObjectiveOptimizer,
 )
 from dandelion_learn.gnn_predictor import GNNPredictor
+from dandelion_learn.experiment_config import ExperimentConfig, DEFAULT_CONFIG
+from dandelion_learn.baseline_schedulers import ShortestJobFirstScheduler, FIFOScheduler
+from dandelion_learn.paths import get_azure_trace_dir
 
 
 # ============================================================================
@@ -66,7 +60,7 @@ class ExperimentalSetup:
     # Training configuration
     num_training_episodes: int = 2000
     jobs_per_episode: int = 100
-    gnn_epochs: int = 10
+    gnn_epochs: int = 50
     rl_epsilon: float = 0.1
     rl_learning_rate: float = 0.01
     
@@ -86,50 +80,94 @@ class ExperimentalSetup:
             self.synthetic_workloads = ["chain", "diamond", "fork_join", "random"]
 
 
+def setup_to_config(setup: ExperimentalSetup) -> ExperimentConfig:
+    """Map legacy ExperimentalSetup onto the unified ExperimentConfig."""
+    # Start from server-tuned defaults, override with ExperimentalSetup fields
+    cfg = ExperimentConfig(
+        num_cpu_units=setup.num_cpu_units,
+        num_gpu_units=setup.num_gpu_units,
+        num_fpga_units=setup.num_fpga_units,
+        azure_trace_days=list(setup.azure_trace_days),
+        max_jobs_per_day=setup.max_jobs_per_day,
+        synthetic_workloads=list(setup.synthetic_workloads),
+        num_training_episodes=setup.num_training_episodes,
+        jobs_per_episode=setup.jobs_per_episode,
+        gnn_epochs=max(setup.gnn_epochs, DEFAULT_CONFIG.gnn_epochs),
+        rl_epsilon=setup.rl_epsilon,
+        rl_learning_rate=setup.rl_learning_rate,
+        optimizer_alpha=setup.optimizer_alpha,
+        optimizer_beta=setup.optimizer_beta,
+        optimizer_gamma=setup.optimizer_gamma,
+        num_runs_per_config=setup.num_runs_per_config,
+        slo_target_ms=setup.slo_target_ms,
+        device=DEFAULT_CONFIG.device,
+        gnn_batch_size=DEFAULT_CONFIG.gnn_batch_size,
+        gnn_hidden=DEFAULT_CONFIG.gnn_hidden,
+    )
+    return cfg
+
+
 def build_experimental_cluster(setup: ExperimentalSetup) -> List[HardwareUnit]:
-    """
-    Build hardware cluster according to experimental setup.
-    
-    Returns:
-        List of HardwareUnit instances representing the cluster
-    """
-    hw_units: List[HardwareUnit] = []
-    hw_id = 0
-    
-    # CPU units
-    for i in range(setup.num_cpu_units):
-        hw_units.append(HardwareUnit(
-            hw_id=hw_id,
-            hw_type="cpu",
-            speedup=1.0,
-            energy_per_ms=1.0,
-            cost_per_ms=1.0,
-        ))
-        hw_id += 1
-    
-    # GPU units
-    for i in range(setup.num_gpu_units):
-        hw_units.append(HardwareUnit(
-            hw_id=hw_id,
-            hw_type="gpu",
-            speedup=5.0,  # 5x speedup for GPU-suitable workloads
-            energy_per_ms=3.0,
-            cost_per_ms=2.5,
-        ))
-        hw_id += 1
-    
-    # FPGA units
-    for i in range(setup.num_fpga_units):
-        hw_units.append(HardwareUnit(
-            hw_id=hw_id,
-            hw_type="fpga",
-            speedup=3.0,  # 3x speedup for FPGA-suitable workloads
-            energy_per_ms=2.0,
-            cost_per_ms=2.0,
-        ))
-        hw_id += 1
-    
-    return hw_units
+    """Build hardware cluster from unified experiment config."""
+    return build_cluster_from_config(setup_to_config(setup))
+
+
+def _train_predictor(jobs, setup: ExperimentalSetup) -> GNNPredictor:
+    cfg = setup_to_config(setup)
+    predictor = GNNPredictor(
+        d_hidden=cfg.gnn_hidden,
+        L=cfg.gnn_layers,
+        device=cfg.device,
+        seed=cfg.seed,
+    )
+    if jobs:
+        predictor.fit(
+            jobs,
+            epochs=cfg.gnn_epochs,
+            lr=cfg.gnn_lr,
+            batch_size=cfg.gnn_batch_size,
+            weight_decay=cfg.gnn_weight_decay,
+            verbose=True,
+        )
+    return predictor
+
+
+def _make_optimizer(cfg: ExperimentConfig) -> MultiObjectiveOptimizer:
+    return MultiObjectiveOptimizer(
+        alpha=cfg.optimizer_alpha,
+        beta=cfg.optimizer_beta,
+        gamma=cfg.optimizer_gamma,
+        queue_weight=cfg.optimizer_queue_weight,
+        cold_weight=cfg.optimizer_cold_weight,
+        cold_start_ms=cfg.cold_start_ms,
+    )
+
+
+def _make_rl(hw_units, cfg: ExperimentConfig, use_context: bool = True) -> RLScheduler:
+    return RLScheduler(
+        hw_units,
+        epsilon=cfg.rl_epsilon,
+        use_context=use_context,
+        context_weight=cfg.rl_context_weight,
+        queue_weight=cfg.rl_queue_weight,
+        cold_weight=cfg.rl_cold_weight,
+        cold_start_ms=cfg.cold_start_ms,
+    )
+
+
+def _make_sim(jobs, hw_units, predictor, scheduler, optimizer, use_optimizer, cfg: ExperimentConfig):
+    return ClusterSimulator(
+        jobs=list(jobs),
+        hw_units=hw_units,
+        predictor=predictor,
+        scheduler=scheduler,
+        optimizer=optimizer,
+        use_optimizer=use_optimizer,
+        optimizer_rl_bias=cfg.optimizer_rl_bias,
+        slo_target_ms=cfg.slo_target_ms,
+        enable_cold_start=cfg.enable_cold_start,
+        cold_start_ms=cfg.cold_start_ms,
+    )
 
 
 # ============================================================================
@@ -155,18 +193,20 @@ def run_performance_evaluation(
     hw_units = build_experimental_cluster(setup)
     all_results: List[Dict[str, Any]] = []
     
-    # Load Azure trace datasets
-    trace_dir = Path(".").resolve() / "azure_trace"
+    # Load Azure Functions 2019 traces from <project>/azure_trace/*.csv
     datasets: List[WorkloadDataset] = []
-    
-    if trace_dir.exists():
+    try:
+        trace_dir = get_azure_trace_dir()
+        print(f"Azure trace dir: {trace_dir}")
         for day in setup.azure_trace_days:
             try:
                 dataset = load_azure_trace_dataset(trace_dir, day=day, max_jobs=setup.max_jobs_per_day)
                 datasets.append(dataset)
                 print(f"Loaded Azure trace day {day}: {len(dataset.jobs)} jobs")
-            except FileNotFoundError:
-                print(f"[WARNING] Azure trace day {day} not found, skipping")
+            except FileNotFoundError as exc:
+                print(f"[WARNING] Azure trace day {day} not found, skipping ({exc})")
+    except FileNotFoundError as exc:
+        print(f"[WARNING] {exc}")
     
     # Add synthetic workloads
     for dag_type in setup.synthetic_workloads:
@@ -181,59 +221,45 @@ def run_performance_evaluation(
     if not datasets:
         raise RuntimeError("No workloads available for evaluation")
     
-    # Train GNN predictor on combined training data
+    # Train GNN predictor on combined training data (offline pre-train)
     print("\nTraining GNN predictor on historical data...")
     all_training_jobs = []
-    for dataset in datasets[:3]:  # Use first 3 datasets for training
-        all_training_jobs.extend(dataset.jobs[:len(dataset.jobs)//2])
-    
-    predictor = GNNPredictor()
-    if all_training_jobs:
-        predictor.fit(all_training_jobs)
-        print(f"  Trained on {len(all_training_jobs)} jobs")
-    
-    # Get all schedulers
+    for dataset in datasets[:3]:
+        all_training_jobs.extend(dataset.jobs[: len(dataset.jobs) // 2])
+
+    predictor = _train_predictor(all_training_jobs, setup)
+    print(f"  Trained on {len(all_training_jobs)} jobs for {setup.gnn_epochs} epochs")
+
     baseline_factories = get_all_baseline_schedulers()
-    
-    # Evaluate each scheduler on each workload
+    cfg = setup_to_config(setup)
+
     schedulers_to_test = {
-        "Dandelion-Learn": lambda hw, pred: RLScheduler(hw, epsilon=setup.rl_epsilon),
+        "Dandelion-Learn": lambda hw, pred: _make_rl(hw, cfg, use_context=True),
         **baseline_factories,
     }
-    
+
     print(f"\nEvaluating {len(schedulers_to_test)} schedulers on {len(datasets)} workloads...")
     print(f"  {setup.num_runs_per_config} runs per configuration")
+    print(f"  Cold-start model: {cfg.enable_cold_start} ({cfg.cold_start_ms} ms)")
+    print(f"  Mean inter-arrival: {cfg.mean_interarrival_s}s (burstier load)")
     print()
-    
+
     total_configs = len(schedulers_to_test) * len(datasets) * setup.num_runs_per_config
     config_count = 0
-    
+
     for scheduler_name, scheduler_factory in schedulers_to_test.items():
         use_optimizer = (scheduler_name == "Dandelion-Learn")
-        optimizer = MultiObjectiveOptimizer(
-            alpha=setup.optimizer_alpha,
-            beta=setup.optimizer_beta,
-            gamma=setup.optimizer_gamma,
-        ) if use_optimizer else None
-        
+        optimizer = _make_optimizer(cfg) if use_optimizer else None
+
         for dataset in datasets:
-            # Multiple runs for statistical significance
             for run_id in range(setup.num_runs_per_config):
                 config_count += 1
                 if config_count % 10 == 0:
                     print(f"  Progress: {config_count}/{total_configs} configurations...")
-                
-                # Create scheduler
+
                 scheduler = scheduler_factory(hw_units, predictor)
-                
-                # Run simulation
-                sim = ClusterSimulator(
-                    jobs=dataset.jobs.copy(),
-                    hw_units=hw_units,
-                    predictor=predictor,
-                    scheduler=scheduler,
-                    optimizer=optimizer,
-                    use_optimizer=use_optimizer,
+                sim = _make_sim(
+                    dataset.jobs, hw_units, predictor, scheduler, optimizer, use_optimizer, cfg
                 )
                 
                 start_time = time.time()
@@ -282,117 +308,64 @@ def run_ablation_studies(
     hw_units = build_experimental_cluster(setup)
     all_results: List[Dict[str, Any]] = []
     
-    # Load test workload
-    trace_dir = Path(".").resolve() / "azure_trace"
-    if trace_dir.exists():
+    # Load test workload (prefer real Azure 2019 traces)
+    try:
+        trace_dir = get_azure_trace_dir()
         dataset = load_azure_trace_dataset(trace_dir, day=1, max_jobs=500)
-    else:
+        print(f"Ablation workload: {dataset.name} from {trace_dir}")
+    except FileNotFoundError:
         dataset = generate_synthetic_dag_workload(num_jobs=500, dag_structure="chain")
+        print("Ablation workload: synthetic (Azure traces missing)")
     
-    # Train full predictor
-    predictor = GNNPredictor()
-    predictor.fit(dataset.jobs[:len(dataset.jobs)//2])
-    
-    print("Testing component contributions...")
+    # Train full predictor on first half (same split as performance eval)
+    train_jobs = dataset.jobs[: len(dataset.jobs) // 2]
+    test_jobs = dataset.jobs[len(dataset.jobs) // 2 :] or dataset.jobs
+    predictor = _train_predictor(train_jobs, setup)
+    cfg = setup_to_config(setup)
+
+    print("Testing component contributions on held-out jobs...")
+    print(f"  train={len(train_jobs)} test={len(test_jobs)}")
     print()
-    
-    # 1. Baseline (no learning)
+
+    def _run(name: str, components: str, scheduler, pred, use_opt: bool):
+        optimizer = _make_optimizer(cfg) if use_opt else None
+        sim = _make_sim(test_jobs, hw_units, pred, scheduler, optimizer, use_opt, cfg)
+        sim.run()
+        metrics = compute_metrics_from_simulator(sim, name, dataset.name)
+        result = metrics.to_dict()
+        result["components"] = components
+        all_results.append(result)
+        print(
+            f"   {name}: p99={metrics.p99_latency_ms:.2f} ms, "
+            f"throughput={metrics.throughput_jobs_per_sec:.1f} jobs/s, "
+            f"SLO={100*(1-metrics.slo_violation_rate):.1f}%, "
+            f"cold={100*metrics.cold_start_rate:.1f}%"
+        )
+        return metrics
+
     print("1. Baseline (FIFO, no learning)...")
-    from dandelion_learn.baseline_schedulers import FIFOScheduler
-    scheduler = FIFOScheduler(hw_units)
-    sim = ClusterSimulator(
-        jobs=dataset.jobs.copy(),
-        hw_units=hw_units,
-        predictor=predictor,
-        scheduler=scheduler,
-        optimizer=None,
-        use_optimizer=False,
+    _run("Baseline", "none", FIFOScheduler(hw_units), predictor, False)
+
+    print("2. GNN only (SJF over GNN predictions)...")
+    _run(
+        "GNN-Only",
+        "gnn",
+        ShortestJobFirstScheduler(hw_units, predictor),
+        predictor,
+        False,
     )
-    sim.run()
-    metrics = compute_metrics_from_simulator(sim, "Baseline", dataset.name)
-    result = metrics.to_dict()
-    result['components'] = "none"
-    all_results.append(result)
-    print(f"   p99 latency: {metrics.p99_latency_ms:.2f} ms")
-    
-    # 2. GNN only (predictor, but heuristic scheduler)
-    print("2. GNN predictor only...")
-    scheduler = FIFOScheduler(hw_units)
-    sim = ClusterSimulator(
-        jobs=dataset.jobs.copy(),
-        hw_units=hw_units,
-        predictor=predictor,
-        scheduler=scheduler,
-        optimizer=None,
-        use_optimizer=False,
+
+    print("3. RL only (queue-aware, no GNN context)...")
+    cold_predictor = GNNPredictor(
+        d_hidden=cfg.gnn_hidden, L=cfg.gnn_layers, device=cfg.device, seed=cfg.seed + 1
     )
-    sim.run()
-    metrics = compute_metrics_from_simulator(sim, "GNN-Only", dataset.name)
-    result = metrics.to_dict()
-    result['components'] = "gnn"
-    all_results.append(result)
-    print(f"   p99 latency: {metrics.p99_latency_ms:.2f} ms")
-    
-    # 3. RL only (no GNN, no optimizer)
-    print("3. RL scheduler only...")
-    scheduler = RLScheduler(hw_units, epsilon=setup.rl_epsilon)
-    # Use simple predictor (always returns fixed estimates)
-    simple_predictor = GNNPredictor()
-    sim = ClusterSimulator(
-        jobs=dataset.jobs.copy(),
-        hw_units=hw_units,
-        predictor=simple_predictor,
-        scheduler=scheduler,
-        optimizer=None,
-        use_optimizer=False,
-    )
-    sim.run()
-    metrics = compute_metrics_from_simulator(sim, "RL-Only", dataset.name)
-    result = metrics.to_dict()
-    result['components'] = "rl"
-    all_results.append(result)
-    print(f"   p99 latency: {metrics.p99_latency_ms:.2f} ms")
-    
-    # 4. GNN + RL (no optimizer)
+    _run("RL-Only", "rl", _make_rl(hw_units, cfg, use_context=False), cold_predictor, False)
+
     print("4. GNN + RL (no optimizer)...")
-    scheduler = RLScheduler(hw_units, epsilon=setup.rl_epsilon)
-    sim = ClusterSimulator(
-        jobs=dataset.jobs.copy(),
-        hw_units=hw_units,
-        predictor=predictor,
-        scheduler=scheduler,
-        optimizer=None,
-        use_optimizer=False,
-    )
-    sim.run()
-    metrics = compute_metrics_from_simulator(sim, "GNN+RL", dataset.name)
-    result = metrics.to_dict()
-    result['components'] = "gnn+rl"
-    all_results.append(result)
-    print(f"   p99 latency: {metrics.p99_latency_ms:.2f} ms")
-    
-    # 5. Full Dandelion-Learn (GNN + RL + Optimizer)
-    print("5. Full Dandelion-Learn (GNN + RL + Optimizer)...")
-    scheduler = RLScheduler(hw_units, epsilon=setup.rl_epsilon)
-    optimizer = MultiObjectiveOptimizer(
-        alpha=setup.optimizer_alpha,
-        beta=setup.optimizer_beta,
-        gamma=setup.optimizer_gamma,
-    )
-    sim = ClusterSimulator(
-        jobs=dataset.jobs.copy(),
-        hw_units=hw_units,
-        predictor=predictor,
-        scheduler=scheduler,
-        optimizer=optimizer,
-        use_optimizer=True,
-    )
-    sim.run()
-    metrics = compute_metrics_from_simulator(sim, "Dandelion-Learn", dataset.name)
-    result = metrics.to_dict()
-    result['components'] = "full"
-    all_results.append(result)
-    print(f"   p99 latency: {metrics.p99_latency_ms:.2f} ms")
+    _run("GNN+RL", "gnn+rl", _make_rl(hw_units, cfg, use_context=True), predictor, False)
+
+    print("5. Full Dandelion-Learn (GNN + RL + Optimizer + cold-start aware)...")
+    _run("Dandelion-Learn", "full", _make_rl(hw_units, cfg, use_context=True), predictor, True)
     
     # Save results
     df = pd.DataFrame(all_results)
@@ -431,57 +404,44 @@ def run_scalability_analysis(
     # Test different workload sizes
     workload_sizes = [100, 500, 1000, 2000, 5000]
     
-    trace_dir = Path(".").resolve() / "azure_trace"
-    if trace_dir.exists():
+    try:
+        trace_dir = get_azure_trace_dir()
         base_dataset = load_azure_trace_dataset(trace_dir, day=1, max_jobs=5000)
-    else:
+        print(f"Scalability workload from {trace_dir}")
+    except FileNotFoundError:
         base_dataset = generate_synthetic_dag_workload(num_jobs=5000, dag_structure="chain")
+        print("Scalability workload: synthetic (Azure traces missing)")
     
-    predictor = GNNPredictor()
-    predictor.fit(base_dataset.jobs[:1000])
-    
+    cfg = setup_to_config(setup)
+    predictor = _train_predictor(base_dataset.jobs[:1000], setup)
+
     print("Testing scalability with increasing workload size...")
     print()
-    
+
     for num_jobs in workload_sizes:
         if num_jobs > len(base_dataset.jobs):
             continue
-        
+
         test_jobs = base_dataset.jobs[:num_jobs]
-        
-        # Measure overhead components
+
         overhead_results = {
-            'num_jobs': num_jobs,
-            'gnn_prediction_time_ms': 0.0,
-            'rl_decision_time_ms': 0.0,
-            'optimizer_time_ms': 0.0,
-            'total_scheduling_overhead_ms': 0.0,
+            "num_jobs": num_jobs,
+            "gnn_prediction_time_ms": 0.0,
+            "rl_decision_time_ms": 0.0,
+            "optimizer_time_ms": 0.0,
+            "total_scheduling_overhead_ms": 0.0,
         }
-        
-        # Test with Dandelion-Learn
-        scheduler = RLScheduler(hw_units, epsilon=setup.rl_epsilon)
-        optimizer = MultiObjectiveOptimizer(
-            alpha=setup.optimizer_alpha,
-            beta=setup.optimizer_beta,
-            gamma=setup.optimizer_gamma,
-        )
-        
-        # Measure prediction overhead
+
+        scheduler = _make_rl(hw_units, cfg, use_context=True)
+        optimizer = _make_optimizer(cfg)
+
         pred_start = time.time()
-        for job in test_jobs[:100]:  # Sample for overhead measurement
+        for job in test_jobs[:100]:
             _ = predictor.predict(job, "cpu")
-        pred_time = (time.time() - pred_start) / 100 * 1000  # ms per prediction
-        overhead_results['gnn_prediction_time_ms'] = pred_time
-        
-        # Run full simulation
-        sim = ClusterSimulator(
-            jobs=test_jobs.copy(),
-            hw_units=hw_units,
-            predictor=predictor,
-            scheduler=scheduler,
-            optimizer=optimizer,
-            use_optimizer=True,
-        )
+        pred_time = (time.time() - pred_start) / 100 * 1000
+        overhead_results["gnn_prediction_time_ms"] = pred_time
+
+        sim = _make_sim(test_jobs, hw_units, predictor, scheduler, optimizer, True, cfg)
         
         sim_start = time.time()
         sim.run()
@@ -605,37 +565,12 @@ def run_security_analysis(
 # ============================================================================
 
 if __name__ == "__main__":
-    print("=" * 70)
-    print("EXPERIMENTAL EVALUATION")
-    print("=" * 70)
-    print()
-    
     setup = ExperimentalSetup()
-    results_dir = Path(".").resolve() / "results"
+    results_dir = Path(__file__).resolve().parents[1] / "results_fixed"
     results_dir.mkdir(exist_ok=True)
-    
-    # Run all evaluation sections
-    print("Running complete experimental evaluation...")
-    print()
-    
-    # Performance results
-    perf_df = run_performance_evaluation(setup, results_dir)
-    print()
-    
-    # Ablation studies
-    ablation_df = run_ablation_studies(setup, results_dir)
-    print()
-    
-    # Scalability and overhead
-    scalability_df = run_scalability_analysis(setup, results_dir)
-    print()
-    
-    # Security analysis
-    security_df = run_security_analysis(setup, results_dir)
-    print()
-    
-    print("=" * 70)
-    print("[OK] Complete experimental evaluation finished")
-    print(f"     Results saved to: {results_dir}")
-    print("=" * 70)
+    run_performance_evaluation(setup, results_dir)
+    run_ablation_studies(setup, results_dir)
+    run_scalability_analysis(setup, results_dir)
+    run_security_analysis(setup, results_dir)
+    print(f"[OK] Evaluation finished. Results: {results_dir}")
 

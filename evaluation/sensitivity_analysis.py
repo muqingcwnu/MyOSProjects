@@ -68,8 +68,8 @@ def run_sensitivity_experiment(
 
 def evaluate_optimizer_weights():
     """Evaluate sensitivity to optimizer weights (α, β, γ)."""
-    trace_dir = Path("azure_trace")
-    jobs = load_azure_invocations(trace_dir, day=1, max_jobs=1000)
+    from dandelion_learn.paths import get_azure_trace_dir
+    jobs = load_azure_invocations(get_azure_trace_dir(), day=1, max_jobs=1000)
     
     results = []
     
@@ -102,15 +102,17 @@ def evaluate_optimizer_weights():
         results.append(metrics)
     
     df = pd.DataFrame(results)
-    df.to_csv("results/optimizer_weight_sensitivity.csv", index=False)
+    out = Path(__file__).resolve().parents[1] / "results_fixed" / "optimizer_weight_sensitivity.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False)
     print(f"\nOptimizer weight sensitivity results saved")
     return df
 
 
 def evaluate_rl_exploration_rate():
     """Evaluate sensitivity to RL exploration rate (ε)."""
-    trace_dir = Path("azure_trace")
-    jobs = load_azure_invocations(trace_dir, day=1, max_jobs=1000)
+    from dandelion_learn.paths import get_azure_trace_dir
+    jobs = load_azure_invocations(get_azure_trace_dir(), day=1, max_jobs=1000)
     
     results = []
     
@@ -123,7 +125,9 @@ def evaluate_rl_exploration_rate():
         results.append(metrics)
     
     df = pd.DataFrame(results)
-    df.to_csv("results/rl_exploration_sensitivity.csv", index=False)
+    out = Path(__file__).resolve().parents[1] / "results_fixed" / "rl_exploration_sensitivity.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False)
     print(f"\nRL exploration rate sensitivity results saved")
     return df
 

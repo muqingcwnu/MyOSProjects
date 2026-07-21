@@ -44,8 +44,8 @@ def run_multiple_runs(scheduler_name: str, num_runs: int = 10) -> Dict[str, List
         FIRMScheduler,
     )
     
-    trace_dir = Path("azure_trace")
-    jobs = load_azure_invocations(trace_dir, day=1, max_jobs=1000)
+    from dandelion_learn.paths import get_azure_trace_dir
+    jobs = load_azure_invocations(get_azure_trace_dir(), day=1, max_jobs=1000)
     
     hw_units = build_default_cluster()
     predictor = GNNPredictor()
@@ -167,7 +167,9 @@ def perform_statistical_tests():
         })
     
     df = pd.DataFrame(test_results)
-    df.to_csv("results/statistical_significance_tests.csv", index=False)
+    out = Path(__file__).resolve().parents[1] / "results_fixed" / "statistical_significance_tests.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False)
     
     print("\nStatistical significance test results:")
     print(df.to_string())

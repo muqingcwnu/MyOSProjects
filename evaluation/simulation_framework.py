@@ -1,12 +1,4 @@
-"""
-Simulation Framework and Methodology
-
-This module implements the simulation framework:
-- Discrete-event simulator (SimPy-based)
-- Workload datasets
-- Baseline schedulers
-- Evaluation metrics
-"""
+"""Workload loading, baseline wrappers, and evaluation metric helpers."""
 
 import sys
 from pathlib import Path
@@ -124,7 +116,7 @@ def generate_synthetic_dag_workload(
         # Synthetic job properties
         base_duration = float(5.0 + np.random.exponential(scale=10.0))
         input_size = float(1.0 + np.random.exponential(scale=5.0))
-        
+
         jobs.append(InvocationJob(
             job_id=job_id,
             func_id=func_id,
@@ -133,7 +125,8 @@ def generate_synthetic_dag_workload(
             base_duration=base_duration,
         ))
         job_id += 1
-        time_cursor += np.random.exponential(scale=0.1)
+        from dandelion_learn.experiment_config import DEFAULT_CONFIG
+        time_cursor += np.random.exponential(scale=float(DEFAULT_CONFIG.mean_interarrival_s))
     
     return WorkloadDataset(
         name=f"synthetic_{dag_structure}",
@@ -249,11 +242,16 @@ class EvaluationMetrics:
     # SLO compliance
     slo_violations: int
     slo_violation_rate: float
-    
+
+    # Cold-start stats
+    cold_starts: int = 0
+    warm_hits: int = 0
+    cold_start_rate: float = 0.0
+
     # Simulation metadata
-    num_jobs: int
-    simulation_time_s: float
-    
+    num_jobs: int = 0
+    simulation_time_s: float = 0.0
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for CSV export."""
         return {
@@ -271,6 +269,10 @@ class EvaluationMetrics:
             'cost_per_job': self.cost_per_job,
             'slo_violations': self.slo_violations,
             'slo_violation_rate': self.slo_violation_rate,
+            'slo_compliance_rate': 1.0 - self.slo_violation_rate,
+            'cold_starts': self.cold_starts,
+            'warm_hits': self.warm_hits,
+            'cold_start_rate': self.cold_start_rate,
             'num_jobs': self.num_jobs,
             'simulation_time_s': self.simulation_time_s,
             **{f'hw_{hw_id}_util': util for hw_id, util in self.hw_utilization.items()},
@@ -309,35 +311,37 @@ def compute_metrics_from_simulator(
         )
     
     latencies_ms = np.array(sim.job_latencies) * 1000.0
-    
-    # Calculate total simulation time (max completion time)
-    total_time = max(sim.job_latencies) if sim.job_latencies else 0.0
-    
-    # Calculate throughput
-    throughput = len(sim.jobs) / total_time if total_time > 0 else 0.0
-    
-    # Calculate hardware utilization percentages
+
+    # Makespan = simulation horizon used for throughput (jobs / makespan).
+    total_time = float(getattr(sim, "makespan", 0.0) or 0.0)
+    if total_time <= 0.0:
+        total_time = float(sim.env.now) if hasattr(sim, "env") else 0.0
+
+    num_completed = len(sim.job_latencies)
+    throughput = num_completed / total_time if total_time > 0 else 0.0
+
     hw_util_pct = {}
     for hw_id, busy_time in sim.hw_utilization.items():
         util_pct = (busy_time / total_time * 100.0) if total_time > 0 else 0.0
         hw_util_pct[hw_id] = util_pct
-    
-    # Extract GPU utilization (assuming hw_id 1+ are GPU)
+
     gpu_util = 0.0
     for hw in sim.hw_units:
         if hw.hw_type == "gpu":
             gpu_util = max(gpu_util, hw_util_pct.get(hw.hw_id, 0.0))
-    
-    # Calculate per-job metrics
-    num_jobs = len(sim.jobs)
+
+    num_jobs = num_completed
     energy_per_job = sim.total_energy / num_jobs if num_jobs > 0 else 0.0
     cost_per_job = sim.total_cost / num_jobs if num_jobs > 0 else 0.0
-    
-    # Count SLO violations (assuming 100ms SLO)
-    slo_target_ms = 100.0
-    slo_violations = np.sum(latencies_ms > slo_target_ms)
+
+    slo_target_ms = float(getattr(sim, "slo_target_ms", 100.0))
+    slo_violations = int(getattr(sim, "slo_violations", np.sum(latencies_ms > slo_target_ms)))
     slo_violation_rate = slo_violations / num_jobs if num_jobs > 0 else 0.0
-    
+    cold_starts = int(getattr(sim, "cold_starts", 0))
+    warm_hits = int(getattr(sim, "warm_hits", 0))
+    cold_den = max(1, cold_starts + warm_hits)
+    cold_start_rate = cold_starts / cold_den
+
     return EvaluationMetrics(
         scheduler_name=scheduler_name,
         workload_name=workload_name,
@@ -353,8 +357,11 @@ def compute_metrics_from_simulator(
         total_cost=sim.total_cost,
         energy_per_job=energy_per_job,
         cost_per_job=cost_per_job,
-        slo_violations=int(slo_violations),
-        slo_violation_rate=slo_violation_rate,
+        slo_violations=slo_violations,
+        slo_violation_rate=float(slo_violation_rate),
+        cold_starts=cold_starts,
+        warm_hits=warm_hits,
+        cold_start_rate=float(cold_start_rate),
         num_jobs=num_jobs,
         simulation_time_s=total_time,
     )
@@ -373,14 +380,14 @@ if __name__ == "__main__":
     # Test Discrete-event simulator
     print("Testing Discrete-event simulator...")
     root = Path(".").resolve()
-    trace_dir = root / "azure_trace"
-    
-    if trace_dir.exists():
+    from dandelion_learn.paths import get_azure_trace_dir
+    try:
+        trace_dir = get_azure_trace_dir(root / "azure_trace")
         dataset = load_azure_trace_dataset(trace_dir, day=1, max_jobs=100)
         hw_units = build_default_cluster()
         predictor = GNNPredictor()
-        predictor.fit(dataset.jobs)
-        
+        predictor.fit(dataset.jobs, epochs=5, verbose=False)
+
         scheduler = FIFOScheduler(hw_units)
         sim = ClusterSimulator(
             jobs=dataset.jobs[:50],
@@ -392,12 +399,13 @@ if __name__ == "__main__":
         )
         sim.run()
         metrics = compute_metrics_from_simulator(sim, "FIFO", dataset.name)
+        print(f"  Azure dir: {trace_dir}")
         print(f"  Simulated {metrics.num_jobs} jobs")
         print(f"  p99 latency: {metrics.p99_latency_ms:.2f} ms")
         print(f"  Throughput: {metrics.throughput_jobs_per_sec:.2f} jobs/s")
         print("[OK] Discrete-event simulator working")
-    else:
-        print("[WARNING] Azure trace directory not found, skipping test")
+    except FileNotFoundError as exc:
+        print(f"[WARNING] Azure traces missing, skipping test: {exc}")
     
     print()
     print("Workload datasets available:")

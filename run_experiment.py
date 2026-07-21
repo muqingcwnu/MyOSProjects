@@ -1,126 +1,57 @@
-"""
-Dandelion-Learn Complete Experiment Runner
+"""Run training then full evaluation; writes CSVs to results_fixed/."""
 
-Main entry point to run the full experiment pipeline:
-- Training simulation
-- Performance evaluation
-- Figure generation
+from __future__ import annotations
 
-Usage:
-    python run_experiment.py
-"""
-
-import sys
-from pathlib import Path
 import subprocess
-import shutil
+import sys
 import time
+from pathlib import Path
 
-# Setup paths
-root = Path(__file__).parent.resolve()
-sys.path.insert(0, str(root))
-sys.path.insert(0, str(root / "src"))
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
-print("Dandelion-Learn Experiment Runner")
-print("\nThis script will:")
-print("  1. Run training simulation (2000 iterations, 100 samples each)")
-print("  2. Run experimental evaluation (performance, ablation, scalability)")
-print("  3. Generate all figures")
-print("\nEstimated time: 30-60 minutes")
+RESULTS_DIR = ROOT / "results_fixed"
 
-# Setup results directory
-results_dir = root / "results"
-results_dir.mkdir(parents=True, exist_ok=True)
 
-print(f"\n[OK] Created results directory: {results_dir}")
-
-# Step 1: Training
-print("\nStep 1: Training Simulation")
-
-start_time = time.time()
-
-try:
+def _run(script: str) -> None:
     result = subprocess.run(
-        [sys.executable, "scripts/real_training_simulation.py"],
+        [sys.executable, script],
+        cwd=str(ROOT),
         capture_output=True,
         text=True,
-        check=True
+        check=False,
     )
-    print(result.stdout)
-    
-    # Logs saved to results
-    print(f"\n[OK] Training logs and plots saved to: {results_dir}")
-    
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Training simulation completed in {elapsed/60:.1f} minutes")
-    
-except subprocess.CalledProcessError as e:
-    print(f"\n[ERROR] Training simulation failed:")
-    print(e.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"\n[ERROR] Error: {e}")
-    sys.exit(1)
+    if result.stdout:
+        print(result.stdout)
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr)
+        raise SystemExit(result.returncode)
 
-# Step 2: Evaluation
-print("\nStep 2: Full Evaluation")
 
-start_time = time.time()
+def main() -> None:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    print("Dandelion-Learn experiment")
+    print(f"Output: {RESULTS_DIR}")
+    print("  1) Training simulation")
+    print("  2) Evaluation (performance, ablation, scalability, security)")
 
-try:
-    # Run evaluation
-    result = subprocess.run(
-        [sys.executable, "run_complete_evaluation.py"],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    print(result.stdout)
-    
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Full evaluation completed in {elapsed/60:.1f} minutes")
-    
-except subprocess.CalledProcessError as e:
-    print(f"\n[ERROR] Full evaluation failed:")
-    print(e.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"\n[ERROR] Error: {e}")
-    sys.exit(1)
+    t0 = time.time()
+    print("\nStep 1: Training")
+    _run("scripts/real_training_simulation.py")
+    print(f"[OK] Training done in {(time.time() - t0) / 60:.1f} min")
 
-# Step 3: Generate figures
-print("\nStep 3: Generating Figures")
-try:
-    result = subprocess.run(
-        [sys.executable, "evaluation/generate_figures.py"],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    print(result.stdout)
-    
-        
-except Exception as e:
-    print(f"[WARNING] Evaluation figures generation had issues: {e}")
+    t1 = time.time()
+    print("\nStep 2: Evaluation")
+    _run("run_complete_evaluation.py")
+    print(f"[OK] Evaluation done in {(time.time() - t1) / 60:.1f} min")
 
-# Step 4: Summary
-print("\nStep 4: Summary")
+    csvs = sorted(RESULTS_DIR.glob("*.csv"))
+    print(f"\n[OK] {len(csvs)} CSV files in {RESULTS_DIR}")
+    for f in csvs:
+        print(f"  - {f.name}")
 
-# Count files
-all_figures = sorted(results_dir.glob("*.png"))
-all_logs = sorted(results_dir.glob("*training*.csv"))
-all_data = sorted(results_dir.glob("*.csv"))
-all_data = [f for f in all_data if "training" not in f.name.lower()]
 
-print(f"\n[OK] Total figures generated: {len(all_figures)}")
-print(f"[OK] Total log files: {len(all_logs)}")
-print(f"[OK] Total data files: {len(all_data)}")
-
-print(f"\nResults summary:")
-print(f"  - Figures: {len(all_figures)} PNG files")
-print(f"  - Logs:   {len(all_logs)} CSV files")
-print(f"  - Data:   {len(all_data)} CSV files")
-
-print("\n[OK] Experiment complete!")
-print(f"\nAll results are in: {results_dir}")
-
+if __name__ == "__main__":
+    main()

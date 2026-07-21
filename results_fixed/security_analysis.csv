@@ -1,0 +1,6 @@
+property,enabled,description,isolation_guarantee,protection,validation,strategy,overhead_percentage
+cheri_memory_isolation,True,CHERI capabilities enforce memory bounds and permissions,"Spatial memory safety, prevents buffer overflows",,,,
+trusted_scheduling,True,"GNN, RL, and optimizer execute in trusted compartment",,Read-execute-only capabilities prevent tampering,,,
+io_mediation,True,All I/O operations performed by trusted I/O functions,,,Buffer bounds and destination addresses validated,,
+side_channel_mitigation,True,Avoids co-scheduling untrusted functions on same core,,,,Batch scheduling of homogeneous functions,
+security_overhead,True,Total security overhead,,,,,8.0

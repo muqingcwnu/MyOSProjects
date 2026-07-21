@@ -1,185 +1,65 @@
-"""
-Complete Experimental Evaluation Runner
+"""Run performance, ablation, scalability, and security evaluations."""
 
-This script runs the complete experimental evaluation:
-- Simulation Framework and Methodology
-- Experimental Evaluation
-
-Usage:
-    python run_complete_evaluation.py
-"""
+from __future__ import annotations
 
 import sys
-from pathlib import Path
 import time
+import traceback
+from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 from evaluation.experimental_evaluation import (
     ExperimentalSetup,
-    run_performance_evaluation,
     run_ablation_studies,
+    run_performance_evaluation,
     run_scalability_analysis,
     run_security_analysis,
 )
 
-print("=" * 70)
-print("DANDELION-LEARN: COMPLETE EXPERIMENTAL EVALUATION")
-print("=" * 70)
-print()
+RESULTS_DIR = ROOT / "results_fixed"
 
-# Create results directory
-results_dir = Path(".").resolve() / "results"
-results_dir.mkdir(exist_ok=True)
 
-# Configure experimental setup
-setup = ExperimentalSetup(
-    num_training_episodes=2000,
-    jobs_per_episode=100,
-    num_runs_per_config=5,
-)
+def main() -> None:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    setup = ExperimentalSetup(
+        num_training_episodes=2000,
+        jobs_per_episode=100,
+        num_runs_per_config=5,
+    )
 
-print("Experimental Setup:")
-print(f"  - Training episodes: {setup.num_training_episodes}")
-print(f"  - Jobs per episode: {setup.jobs_per_episode}")
-print(f"  - Runs per configuration: {setup.num_runs_per_config}")
-print(f"  - Azure trace days: {setup.azure_trace_days}")
-print(f"  - Synthetic workloads: {setup.synthetic_workloads}")
-print()
+    print("Dandelion-Learn evaluation")
+    print(f"Output: {RESULTS_DIR}")
+    print(
+        f"Episodes={setup.num_training_episodes}, "
+        f"jobs/episode={setup.jobs_per_episode}, "
+        f"runs={setup.num_runs_per_config}"
+    )
 
-# ============================================================================
-# Simulation Framework and Methodology
-# ============================================================================
-print("=" * 70)
-print("SIMULATION FRAMEWORK AND METHODOLOGY")
-print("=" * 70)
-print()
-print("Discrete-event simulator (SimPy-based) - Implemented")
-print("Workload datasets - Azure trace + Synthetic DAGs")
-print("Baseline schedulers - FIFO, Random, Round-Robin, etc.")
-print("Evaluation metrics - Latency, throughput, energy, cost")
-print()
-print("[OK] Simulation framework ready")
-print()
+    total_start = time.time()
+    steps = [
+        ("Performance", run_performance_evaluation),
+        ("Ablation", run_ablation_studies),
+        ("Scalability", run_scalability_analysis),
+        ("Security", run_security_analysis),
+    ]
+    for name, fn in steps:
+        print(f"\n=== {name} ===")
+        t0 = time.time()
+        try:
+            fn(setup, RESULTS_DIR)
+            print(f"[OK] {name} in {(time.time() - t0) / 60:.1f} min")
+        except Exception as exc:
+            print(f"[ERROR] {name} failed: {exc}")
+            traceback.print_exc()
 
-# ============================================================================
-# Experimental Evaluation
-# ============================================================================
-print("=" * 70)
-print("EXPERIMENTAL EVALUATION")
-print("=" * 70)
-print()
+    print(f"\nTotal time: {(time.time() - total_start) / 60:.1f} min")
+    print(f"Results: {RESULTS_DIR}")
+    for f in sorted(RESULTS_DIR.glob("*.csv")):
+        print(f"  - {f.name}")
 
-total_start = time.time()
 
-# Experimental setup
-print("Experimental Setup")
-print("  - Hardware: CPU, GPU, FPGA units")
-print("  - Workloads: Azure traces + synthetic DAGs")
-print("  - Schedulers: Dandelion-Learn + 5 baselines")
-print("  - Metrics: Latency, throughput, energy, cost, utilization")
-print()
-print("[OK] Experimental setup configured")
-print()
-
-# Performance results
-print("=" * 70)
-print("PERFORMANCE RESULTS")
-print("=" * 70)
-print("Running comprehensive performance evaluation...")
-print("This compares Dandelion-Learn against all baseline schedulers.")
-print()
-
-start_time = time.time()
-try:
-    perf_df = run_performance_evaluation(setup, results_dir)
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Performance evaluation completed in {elapsed/60:.1f} minutes")
-except Exception as e:
-    print(f"\n[ERROR] Performance evaluation failed: {e}")
-    import traceback
-    traceback.print_exc()
-
-print()
-
-# Ablation studies
-print("=" * 70)
-print("ABLATION STUDIES")
-print("=" * 70)
-print("Analyzing component contributions...")
-print()
-
-start_time = time.time()
-try:
-    ablation_df = run_ablation_studies(setup, results_dir)
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Ablation studies completed in {elapsed/60:.1f} minutes")
-except Exception as e:
-    print(f"\n[ERROR] Ablation studies failed: {e}")
-    import traceback
-    traceback.print_exc()
-
-print()
-
-# Scalability and overhead
-print("=" * 70)
-print("SCALABILITY AND OVERHEAD")
-print("=" * 70)
-print("Analyzing system scalability and overhead...")
-print()
-
-start_time = time.time()
-try:
-    scalability_df = run_scalability_analysis(setup, results_dir)
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Scalability analysis completed in {elapsed/60:.1f} minutes")
-except Exception as e:
-    print(f"\n[ERROR] Scalability analysis failed: {e}")
-    import traceback
-    traceback.print_exc()
-
-print()
-
-# Security analysis
-print("=" * 70)
-print("SECURITY ANALYSIS")
-print("=" * 70)
-print("Analyzing security properties...")
-print()
-
-start_time = time.time()
-try:
-    security_df = run_security_analysis(setup, results_dir)
-    elapsed = time.time() - start_time
-    print(f"\n[OK] Security analysis completed in {elapsed/60:.1f} minutes")
-except Exception as e:
-    print(f"\n[ERROR] Security analysis failed: {e}")
-    import traceback
-    traceback.print_exc()
-
-print()
-
-# ============================================================================
-# Final Summary
-# ============================================================================
-total_elapsed = time.time() - total_start
-
-print("=" * 70)
-print("EXPERIMENTAL EVALUATION COMPLETE")
-print("=" * 70)
-print(f"\nTotal time: {total_elapsed/60:.1f} minutes")
-print(f"\nResults saved to: {results_dir}")
-print()
-
-# List generated files
-result_files = list(results_dir.glob("*.csv"))
-print(f"Generated {len(result_files)} result files:")
-for f in sorted(result_files):
-    print(f"  - {f.name}")
-
-print()
-print("=" * 70)
-print("[OK] All evaluation sections completed")
-print("=" * 70)
-
+if __name__ == "__main__":
+    main()

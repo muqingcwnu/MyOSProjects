@@ -124,8 +124,8 @@ def run_distributed_simulation(
 
 def evaluate_distributed_scalability():
     """Evaluate distributed scheduling scalability from 1 to 20 nodes."""
-    trace_dir = Path("azure_trace")
-    jobs = load_azure_invocations(trace_dir, day=1, max_jobs=2000)
+    from dandelion_learn.paths import get_azure_trace_dir
+    jobs = load_azure_invocations(get_azure_trace_dir(), day=1, max_jobs=2000)
     
     results = []
     for num_nodes in [1, 5, 10, 15, 20]:
@@ -135,8 +135,10 @@ def evaluate_distributed_scalability():
     
     # Save to CSV
     df = pd.DataFrame(results)
-    df.to_csv("results/distributed_scalability.csv", index=False)
-    print(f"\nDistributed scalability results saved to results/distributed_scalability.csv")
+    out = Path(__file__).resolve().parents[1] / "results_fixed" / "distributed_scalability.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False)
+    print(f"\nDistributed scalability results saved to {out}")
     print(df.to_string())
     
     return df
