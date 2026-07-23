@@ -50,17 +50,21 @@ def run_sensitivity_experiment(
     simulator.run()
     
     latencies_ms = [l * 1000 for l in simulator.job_latencies]
+    n = len(simulator.job_latencies)
+    makespan = float(simulator.makespan) if simulator.makespan > 0 else 0.0
     
     return {
         'alpha': alpha,
         'beta': beta,
         'gamma': gamma,
         'epsilon': epsilon,
-        'p50_latency_ms': np.percentile(latencies_ms, 50),
-        'p95_latency_ms': np.percentile(latencies_ms, 95),
-        'p99_latency_ms': np.percentile(latencies_ms, 99),
-        'mean_latency_ms': np.mean(latencies_ms),
-        'throughput': len(jobs) / max(simulator.job_latencies) if simulator.job_latencies else 0,
+        'p50_latency_ms': np.percentile(latencies_ms, 50) if n else 0.0,
+        'p95_latency_ms': np.percentile(latencies_ms, 95) if n else 0.0,
+        'p99_latency_ms': np.percentile(latencies_ms, 99) if n else 0.0,
+        'mean_latency_ms': float(np.mean(latencies_ms)) if n else 0.0,
+        'throughput': (n / makespan) if makespan > 0 else 0.0,
+        'energy_per_job': (simulator.total_energy / n) if n else 0.0,
+        'cost_per_job': (simulator.total_cost / n) if n else 0.0,
         'total_energy': simulator.total_energy,
         'total_cost': simulator.total_cost,
     }
@@ -97,7 +101,7 @@ def evaluate_optimizer_weights():
     ]
     
     for alpha, beta, gamma in weight_configs:
-        print(f"Testing α={alpha}, β={beta}, γ={gamma}...")
+        print(f"Testing alpha={alpha}, beta={beta}, gamma={gamma}...")
         metrics = run_sensitivity_experiment(jobs, alpha, beta, gamma, epsilon=0.1)
         results.append(metrics)
     
@@ -120,7 +124,7 @@ def evaluate_rl_exploration_rate():
     epsilon_values = [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
     
     for epsilon in epsilon_values:
-        print(f"Testing ε={epsilon}...")
+        print(f"Testing epsilon={epsilon}...")
         metrics = run_sensitivity_experiment(jobs, alpha=1.0, beta=0.05, gamma=0.05, epsilon=epsilon)
         results.append(metrics)
     

@@ -66,7 +66,8 @@ def run_distributed_simulation(
     all_latencies = []
     total_energy = 0.0
     total_cost = 0.0
-    
+    node_makespans = []
+
     for node_id in range(num_nodes):
         # Setup hardware for this node
         node_hw_units = build_default_cluster()
@@ -99,12 +100,16 @@ def run_distributed_simulation(
         all_latencies.extend(simulator.job_latencies)
         total_energy += simulator.total_energy
         total_cost += simulator.total_cost
+        node_makespans.append(float(simulator.makespan))
     
     # Get overhead stats
     overhead = param_server.get_coordination_overhead()
     
     # Compute metrics
     latencies_ms = [l * 1000 for l in all_latencies]
+    # Fixed offered load: nodes process partitions in parallel → throughput uses max makespan
+    global_makespan = max(node_makespans) if node_makespans else 0.0
+    throughput = (len(jobs) / global_makespan) if global_makespan > 0 else 0.0
     
     return {
         'num_nodes': num_nodes,
@@ -112,7 +117,8 @@ def run_distributed_simulation(
         'p95_latency_ms': np.percentile(latencies_ms, 95),
         'p99_latency_ms': np.percentile(latencies_ms, 99),
         'mean_latency_ms': np.mean(latencies_ms),
-        'throughput': len(jobs) / max(all_latencies) if all_latencies else 0,
+        'throughput': throughput,
+        'makespan_s': global_makespan,
         'total_energy': total_energy,
         'total_cost': total_cost,
         'coordination_overhead_ms': overhead['avg_sync_time_ms'],

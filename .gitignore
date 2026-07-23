@@ -46,3 +46,13 @@ htmlcov/
 # Large Azure archive (extracted CSVs are tracked via Git LFS)
 azure_trace/*.tar.xz
 azure_trace/*.tar.gz
+
+# Manuscripts (kept local; not published with the code)
+paper.tex
+paper_clean.tex
+*.tex
+
+# Local helper / one-off upload scripts
+_*.py
+_*.log
+*.bak
